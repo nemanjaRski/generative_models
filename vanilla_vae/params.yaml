@@ -1,0 +1,23 @@
+dataset:
+  data_path: "E:/Datasets/"
+  name: 'CelebA'
+
+batch:
+  train_batch_size: 64
+  val_batch_size: 64
+
+train_params:
+  latent_dim: 128
+  lr: 0.005
+  weight_decay: 0.0
+  gpus: [0]
+  max_epochs: 50
+  kl_weight: 0.0001
+  recon_weight: 1.0
+  checkpoint: null
+  channel_sizes: [3, 32, 64, 128, 256, 512]
+
+logging_params:
+  save_dir: "artifacts/"
+  name: "CelebALogs"
+  

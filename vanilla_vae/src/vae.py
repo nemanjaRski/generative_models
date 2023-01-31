@@ -1,64 +1,150 @@
-import pytorch_lightning as pl
+from typing import List
+
 import torch
-from .util import plot_vae_outputs
+from torch import nn
+from torch.nn import functional as F
+from torch import Tensor
 
 
-def default_loss(x, x_hat, mu, sigma, kl_weight, reconstruction_weight):
-
-    reconstruction_loss = ((x - x_hat) ** 2).sum()
-    kl_divergence = (sigma ** 2 + mu ** 2 - torch.log(sigma) - 1 / 2).sum()
-
-    loss = kl_weight * kl_divergence + reconstruction_weight * reconstruction_loss
-
-    return loss
-
-
-class VariationalAutoEncoder(pl.LightningModule):
-    def __init__(self, encoder, decoder, loss_function=None):
-        super(VariationalAutoEncoder, self).__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        if loss_function:
-            self.loss_function = loss_function
-        else:
-            self.loss_function = default_loss
+class Encoder(nn.Module):
+    def __init__(self, channel_sizes, *args, **kwargs):
+        super(Encoder, self).__init__()
+        self.encoder_pipeline = nn.Sequential(
+            *[self.conv_block(in_channels, out_channels, *args, **kwargs)
+              for in_channels, out_channels in zip(channel_sizes, channel_sizes[1:])])
 
     def forward(self, x):
-        z, mu, sigma = self.encoder(x)
-        x_hat = self.decoder(z)
-        return x_hat, mu, sigma
+        return self.encoder_pipeline(x)
 
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-5)
+    @staticmethod
+    def conv_block(in_channels, out_channels, activation='relu', *args, **kwargs):
+        activations = nn.ModuleDict([
+            ['lrelu', nn.LeakyReLU()],
+            ['relu', nn.ReLU()]
+        ])
 
-    def training_step(self, batch, batch_idx):
-        x, _ = batch
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, *args, **kwargs),
+            nn.BatchNorm2d(out_channels),
+            activations[activation]
+        )
 
-        z, mu, sigma = self.encoder(x)
-        x_hat = self.decoder(z)
 
-        loss = self.loss_function(x, x_hat, mu, sigma, 1, 10)
+class Decoder(nn.Module):
+    def __init__(self, channel_sizes, *args, **kwargs):
+        super(Decoder, self).__init__()
 
-        return loss
+        self.pipeline = nn.Sequential(
+            *[self.conv_transpose_block(in_channels, out_channels, *args, **kwargs)
+              for in_channels, out_channels in zip(channel_sizes, channel_sizes[1:])])
 
-    def validation_step(self, batch, batch_idx):
-        x, _ = batch
+    def forward(self, x):
+        return self.pipeline(x)
 
-        z, mu, sigma = self.encoder(x)
-        x_hat = self.decoder(z)
+    @staticmethod
+    def conv_transpose_block(in_channels, out_channels, activation='relu', *args, **kwargs):
+        activations = nn.ModuleDict([
+            ['lrelu', nn.LeakyReLU()],
+            ['relu', nn.ReLU()]
+        ])
 
-        loss = self.loss_function(x, x_hat, mu, sigma, 1, 10)
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, *args, **kwargs),
+            nn.BatchNorm2d(out_channels),
+            activations[activation]
+        )
 
-        return loss, x, x_hat
 
-    def validation_epoch_end(self, val_step_outputs):
-        loss_list, x_list, x_hat_list = [], [], []
-        for batch in val_step_outputs:
-            step_loss, step_x, step_x_hat = batch
-            loss_list.append(step_loss)
-            x_list.append(step_x)
-            x_hat_list.append(step_x_hat)
+class OutputLayer(nn.Module):
+    def __init__(self, transform_channels, output_channels):
+        super(OutputLayer, self).__init__()
 
-        plot_vae_outputs(x_list[0], x_hat_list[0], self.current_epoch, 'artifacts/train_examples', 'reconstruction')
-        loss = torch.stack(loss_list).mean()
-        self.log("val_loss", loss)
+        self.pipeline = nn.Sequential(
+            nn.ConvTranspose2d(transform_channels,
+                               transform_channels,
+                               kernel_size=3,
+                               stride=2,
+                               padding=1,
+                               output_padding=1),
+            nn.BatchNorm2d(transform_channels),
+            nn.LeakyReLU(),
+            nn.Conv2d(transform_channels, out_channels=output_channels,
+                      kernel_size=3, padding=1),
+            nn.Tanh())
+
+    def forward(self, x):
+        return self.pipeline(x)
+
+
+class VariationalAutoEncoder(nn.Module):
+
+    def __init__(self, latent_dim: int, channel_sizes: List[int]) -> None:
+
+        super(VariationalAutoEncoder, self).__init__()
+
+        self.latent_dim = latent_dim
+        self.channel_sizes = channel_sizes
+
+        self.encoder = Encoder(self.channel_sizes,
+                               kernel_size=3,
+                               padding=1,
+                               stride=2,
+                               activation='lrelu')
+
+        self.fc_mu = nn.Linear(self.channel_sizes[-1] * 4, latent_dim)
+        self.fc_var = nn.Linear(self.channel_sizes[-1] * 4, latent_dim)
+
+        self.decoder_input = nn.Linear(latent_dim, self.channel_sizes[-1] * 4)
+
+        self.channel_sizes.reverse()
+
+        self.decoder = Decoder(channel_sizes=self.channel_sizes[:-1],
+                               kernel_size=3,
+                               stride=2,
+                               output_padding=1,
+                               padding=1,
+                               activation='lrelu')
+
+        self.output_layer = OutputLayer(self.channel_sizes[-2],
+                                        self.channel_sizes[-1])
+
+    def forward(self, x: Tensor):
+        mu, log_var = self.encode(x)
+        z = self.reparameterize(mu, log_var)
+        return self.decode(z), mu, log_var
+
+    def encode(self, x: Tensor):
+        x = self.encoder(x)
+        x = torch.flatten(x, start_dim=1)
+        mu = self.fc_mu(x)
+        log_var = self.fc_var(x)
+        return mu, log_var
+
+    def decode(self, z: Tensor) -> Tensor:
+        z = self.decoder_input(z)
+        z = z.unflatten(1, (512, 2, 2))
+        z = self.decoder(z)
+        x_hat = self.output_layer(z)
+        return x_hat
+
+    @staticmethod
+    def reparameterize(mu: Tensor, log_var: Tensor) -> Tensor:
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return eps * std + mu
+
+    def sample(self, num_samples: int, current_device: int) -> Tensor:
+        z = torch.randn(num_samples, self.latent_dim)
+        z = z.to(current_device)
+        samples = self.decode(z)
+        return samples
+
+    @staticmethod
+    def loss_function(x_hat, x, mu, log_var, recon_weight, kl_weight) -> tuple:
+        recon_loss = F.mse_loss(x_hat, x)
+        kl_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=1), dim=0)
+        loss = recon_weight * recon_loss + kl_weight * kl_loss
+        return loss, recon_loss.detach(), -kl_loss.detach()
+
+
+

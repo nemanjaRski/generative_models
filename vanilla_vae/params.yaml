@@ -3,18 +3,18 @@ dataset:
   name: 'CelebA'
 
 batch:
-  train_batch_size: 64
-  val_batch_size: 64
+  train_batch_size: 128
+  val_batch_size: 128
 
 train_params:
   latent_dim: 128
-  lr: 0.005
-  weight_decay: 0.0
+  lr: 0.01
+  weight_decay: 0.01
   gpus: [0]
   max_epochs: 50
   kl_weight: 0.0001
   recon_weight: 1.0
-  checkpoint: null
+  checkpoint: 'C:\Users\neman\PycharmProjects\generative_models\vanilla_vae\artifacts\CelebA\version_1\model\vae_checkpoint.ckpt'
   channel_sizes: [3, 32, 64, 128, 256, 512]
 
 logging_params:

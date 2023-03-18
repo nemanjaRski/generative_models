@@ -30,10 +30,10 @@ class MNISTDataModule(pl.LightningDataModule):
         self.val_dataset = mnist_val
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=6)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size)
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=6)
 
 
 class CelebADataset(Dataset):

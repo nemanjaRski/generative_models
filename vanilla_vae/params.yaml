@@ -14,7 +14,7 @@ train_params:
   max_epochs: 50
   kl_weight: 0.0001
   recon_weight: 1.0
-  checkpoint: 'C:\Users\neman\PycharmProjects\generative_models\vanilla_vae\artifacts\CelebA\version_1\model\vae_checkpoint.ckpt'
+  checkpoint: null
   channel_sizes: [3, 32, 64, 128, 256, 512]
 
 logging_params:
